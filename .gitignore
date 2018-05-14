@@ -1,32 +1,159 @@
-# Prerequisites
-*.d
+#include "mbed.h"
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
+SPI spi(PA_7, PA_6, PA_5);      // Ordered as: mosi, miso, sclk could use forth parameter ssel
+DigitalOut cs(PC_6);            // Chip Select for Basic Outputs to illuminate Onboard FPGA DEO nano LEDs CN7 pin 1
+InterruptIn blue_button(USER_BUTTON); // user button pressed inturrept
+//int32_t read_switches(void);    //Read 4 Sliding switches on FPGA (Simulating OPTO-Switches from Motor(s)
+//int32_t read_average (void);
+void read_average();					// average read Function
+void read_instant();					//instant value read Function	
+void reset_FPGA();						// Reset The Slave and MCU storing addresses function
+void change_state();					// Change the switching state relaying on the previous state function
+void send_instant();					// send MOSI the instant Value function
+void send_average();					// send MOSI the averaged value function
+DigitalOut onboardGreen(LED1);			// initialize the onboard Green LED address
+DigitalOut onboardRed(LED3);				// initializing the onboard RED LED address
+DigitalOut onboardBlue(LED2);				// initializing the onboard BLUE LED address
+//NBB the following line for F429ZI !!!!
+DigitalIn DO_NOT_USE(PB_12);    // MAKE PB_12 (D19) an INPUT do NOT make an OUTPUT under any circumstances !!!!! ************* !!!!!!!!!!!
+								 // This Pin is connected to the 5VDC from the FPGA card and an INPUT is 5V Tolerant
 
-# Precompiled Headers
-*.gch
-*.pch
+Ticker average;						// an idea to use a ticker but not needed for now 
+Ticker instant;   				// an idea to use a ticker but not needed for now 
 
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
+int state;								//switching state
+int samples_buffer[100];	// samples Buffer size 
+int samples_average =0 ;	// averaged samples address value of the averaging calculation get stored here
+int instant_value =0;		//the same value come oute of the Slave will come out and displayed 
 
-# Fortran module files
-*.mod
-*.smod
+//Ticker ticktock;
+  
+int main() {
+    cs = 1;	// Chip must be deselected, Chip Select is active LOW
+	onboardRed = 1 ;							//on board red LED is ON to indicate the reset mode
+	onboardGreen = 0;							// onboard green LED is off
+	onboardBlue=0;								// onboard Blue LED is off 
+    spi.format(16,0);            // Setup the DATA frame SPI for 16 bit wide word, Clock Polarity 0 and Clock Phase 0 (0)
+    spi.frequency(1000000);     // 1MHz clock rate
+	printf("TEST\n\r");					// print Test Each time the baord RESET
+	state =0;										// initial state is Zero which is RESET
+	
+	
+    while(true)                 //Loop state according to the current state
+			{
+			 cs=1;				// chip select high while switching between states
+			 switch(state)		// state machine function 
+				{
+					case 0:		// when state variable is 0 the MCU command the FPGA to reset
+						if (blue_button ==0) // when blue button released 
+						{
+							reset_FPGA();    // function to reset the FPGA Slave
+							state=1;		 // set the state to 1 to break and move to average function
+						}
+						 break;
+					case 1:
+						if (blue_button == 0) 	// when blue button released 
+						{
+							read_average (); 	// storing the samples from FPGA slave 
+							send_average();		// sending the averaged value to FPGA slave
+							blue_button.rise(&change_state); // when the user button pressed change the state 
+						}
+						break;	
+					case 2:
+						if (blue_button ==0) 	// when blue button released 
+						{
+							read_instant();		// reading the instant sample from FPGA slave 
+							send_instant();		// send the stored instant value to the FPGA 
+							blue_button.rise(&change_state); // when user button pressed change the state 
+						}
+						break;
+				}
+						
+			}
+			//	instant.attach(read_instant, 0.05);  // reaqd the instant value every 0.05 seconds
 
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
 
-# Executables
-*.exe
-*.out
-*.app
+}
+
+
+
+//function to receive the values from the FPGA slave (FIFO buffer)
+//which average the values comming in and display them
+void read_average () {
+
+	for (unsigned int i = 0; i<101; i++){ 	// loop to store the received values in buffer
+		cs = 0;																// active low ChipSelect
+		onboardRed=0;													//Reset mode LED is off (RED)
+		onboardBlue=0;												// instant mode LED is off (BLUE)
+		onboardGreen = 1;											// Average mode LED is on (Green)
+		spi.write(1);													// SPI Command asking for Samples data from slave
+		samples_buffer[i] = spi.write(1);			// storing the Received data in the buffer
+// samples average calculation and convert the hex values to decimal
+		samples_average = ((samples_average + samples_buffer[i]/i)/4095);  			
+// set high ChipSelect after done of receiving sample to give the slave chance to do internal communication
+		cs=1;	
+		//wait_ms(100);
+		}
+	
+		printf("average = %d \r\n", samples_average);   // Display the Stored Value for testing
+	wait_ms(500);// wait half second to see the data displayed
+	};
+
+	
+//function to receive the values from the FPGA slave (FIFO buffer)
+//which display the instant value
+void read_instant()
+{
+	cs=0;																			// Active low Chip Select to get the Slave Ready
+	onboardRed=0;															//onboard Red LED is off
+	onboardGreen=0;														//onboard Greend LED is off
+	onboardBlue=1;														//onboard Blue LED is ON which indicate the instant mode in on
+	spi.write(1);															// Command from SPI Master to Slave to send back samples
+	instant_value =( spi.write(1)/4095);				//  Storing the MISO Value and dividing by 4095 to convert to Decimal
+	wait_ms(1);																	// wait 1ms for the slave to process the command
+	printf("instant = %d \r\n", instant_value); // Display the Stored Value for testing
+	
+	wait_ms(500);						// wait half second to see the data displayed
+}
+		
+
+// code reset the slave FIFO buffer 
+void reset_FPGA()
+{
+	samples_average=0;		// Flushing the internal buffer
+	instant_value=0;			// Resetting the Soring address to zero
+	onboardRed=1;					//Red LED on board indicate the state Condition(Reset)
+	onboardBlue=0;				// switch of the Blue LED
+	onboardGreen=0;				// switch of the Green LED
+	cs=0; 								// Active Low Chip Select to tell the Slave to get ready for Command
+	spi.write(2);					// SPI (2) Command tell the slave to Flush its Buffer
+	wait_ms(1);						// wait 1ms for the slave to process the command
+	
+}
+
+//switching the state of the displayed data between average and instant after reset
+void change_state()
+{
+	state+=1;						//Increment the value of the State by 1 
+	if (state >2)				// when the state Value go over 3 it Reset to 0.
+	{
+		state = 0;				// when the State go to zero the Master Command the Slave to flush its buffer
+	}
+}
+// send back by MOSI Routine the instant data
+void send_instant()
+{
+	cs=0; 												//Active Low Chip Select for the Slave to get ready
+	spi.write(0);									// Command to tell the SPI Slave that the Master will send Data
+	spi.write(instant_value);			// Sending the Instant Value
+	wait_ms(1);										// Wait 1ms for the Slave to Process the Sent Data
+}	
+
+// send back by MOSI Routine the Averaged data
+void send_average()
+{
+	cs=0;													//Active Low Chip Select for the Slave to get ready
+	spi.write(0);									// Command to tell the SPI Slave that the Master will send Data
+	spi.write(samples_average);		// Sending the Averaged Value
+	wait_ms(1);										// Wait 1ms for the Slave to Process the Sent Data
+}
