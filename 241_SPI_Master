@@ -1,0 +1,144 @@
+void send_average();
+DigitalOut onboardGreen(LED1);
+DigitalOut onboardRed(LED3);
+DigitalOut onboardBlue(LED2);
+//NBB the following line for F429ZI !!!!
+DigitalIn DO_NOT_USE(PB_12);    // MAKE PB_12 (D19) an INPUT do NOT make an OUTPUT under any circumstances !!!!! ************* !!!!!!!!!!!
+PwmOut pwmRed(D6);              // This Pin is connected to the 5VDC from the FPGA card and an INPUT is 5V Tolerant
+
+Ticker average;
+Ticker instant;
+
+int state;
+int samples_buffer[100];
+unsigned int samples_average =0 ;
+unsigned int instant_value =0;
+
+ 
+int T = 1000;
+int Tmark = 500;
+//Ticker ticktock;
+  
+int main() {
+    cs = 1; // Chip must be deselected, Chip Select is active LOW
+    onboardRed = 1 ;
+    onboardGreen = 0;
+    onboardBlue=0;
+    spi.format(16,0);            // Setup the DATA frame SPI for 16 bit wide word, Clock Polarity 0 and Clock Phase 0 (0)
+    spi.frequency(1000000);     // 1MHz clock rate
+    printf("TEST\n\r");
+    state =0;
+    pwmRed.period_ms(T);
+    pwmRed.pulsewidth_ms(Tmark);
+    
+    while(true)                 //Loop state according to the current state
+            {
+             cs=1;              // chip select high while switching between states
+             switch(state)      // state machine function 
+                {
+                    case 0:     // when state variable is 0 the MCU command the FPGA to reset
+                        if (blue_button ==0) // when blue button released 
+                        {
+                            reset_FPGA();    // function to reset the FPGA Slave
+                            state=1;         // set the state to 1 to break and move to average function
+                        }
+                         break;
+                    case 1:
+                        if (blue_button == 0)   // when blue button released 
+                        {
+                            pwmRed.period_us(T);
+                            pwmRed.pulsewidth_us(Tmark);
+                            read_average ();    // storing the samples from FPGA slave 
+                            send_average();     // sending the averaged value to FPGA slave
+                            blue_button.rise(&change_state); // when the user button pressed change the state 
+                        }
+                        break;  
+                    case 2:
+                        if (blue_button ==0)    // when blue button released 
+                        {
+                            pwmRed.period_us(T);
+                            pwmRed.pulsewidth_us(Tmark);
+                            read_instant();     // reading the instant sample from FPGA slave 
+                            send_instant();     // send the stored instant value to the FPGA 
+                            blue_button.rise(&change_state); // when user button pressed change the state 
+                        }
+                        break;
+                }
+                        
+            }
+            //  instant.attach(read_instant, 0.05);  // reaqd the instant value every 0.05 seconds
+
+
+}
+
+
+
+
+void read_average () {
+    cs=1;
+    for (unsigned int i = 0; i<100; i++){ 
+        cs = 0;
+        spi.write(1);
+        samples_buffer[i] = spi.write(1);
+        samples_average = ((samples_average + samples_buffer[i])/i);
+        
+        onboardRed=0;
+        onboardBlue=0;
+        onboardGreen = 1;
+        //wait_ms(100);
+        }
+    
+        printf("average = %d \n\r", samples_average);
+    wait_ms(100);
+    }
+
+void read_instant()
+{
+    cs=0;
+    onboardRed=0;
+    onboardGreen=0;
+    onboardBlue=1;
+    spi.write(1);
+    instant_value = (spi.write(1));
+    wait_ms(1);
+    printf("instant = %d \n\r", instant_value);
+    
+    wait_ms(100);
+}
+        
+void reset_FPGA()
+{
+    onboardRed=1;
+    onboardBlue=0;
+    onboardGreen=0;
+    cs=0; 
+    spi.write(2);
+    wait_ms(1);
+    
+}
+
+void change_state()
+{
+    state+=1;
+    if (state >2)
+    {
+        state = 0;
+    }
+}
+
+void send_instant()
+{
+    cs=0; 
+    spi.write(0);
+    spi.write(instant_value);
+    wait_ms(1);
+}   
+
+
+void send_average()
+{
+    cs=0;
+    spi.write(0);
+    spi.write(samples_average);
+    wait_ms(1);
+}
